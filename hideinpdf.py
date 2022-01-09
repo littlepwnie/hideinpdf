@@ -1,10 +1,13 @@
-import base64
+from base64 import b64decode, b64encode
 import re
 import sys
 from Crypto import Random
 from Crypto.Cipher import AES
-import hashlib
+from hashlib import md5
 import PyPDF2 as pypdf
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad, unpad
 
 
 def readFile(fn):
@@ -22,34 +25,23 @@ def readFile(fn):
 
 def b64enc(string):
 	if type(string) is bytes:
-		return base64.b64encode(string)
+		return b64encode(string)
 	else:
-		return base64.b64encode(string.encode())
+		return b64encode(string.encode())
 
-class AESCipher(object):
+class AESCipher:
+    def __init__(self, key):
+        self.key = md5(key.encode('utf8')).digest()
 
-    def __init__(self, key): 
-        self.bs = AES.block_size
-        self.key = hashlib.sha256(key.encode()).digest()
+    def encrypt(self, data):
+        iv = get_random_bytes(AES.block_size)
+        self.cipher = AES.new(self.key, AES.MODE_CBC, iv)
+        return b64encode(iv + self.cipher.encrypt(pad(data.encode('utf-8'), AES.block_size)))
 
-    def encrypt(self, raw):
-        raw = self._pad(raw)
-        iv = Random.new().read(AES.block_size)
-        cipher = AES.new(self.key, AES.MODE_CBC, iv)
-        return base64.b64encode(iv + cipher.encrypt(raw.encode()))
-
-    def decrypt(self, enc):
-        enc = base64.b64decode(enc)
-        iv = enc[:AES.block_size]
-        cipher = AES.new(self.key, AES.MODE_CBC, iv)
-        return self._unpad(cipher.decrypt(enc[AES.block_size:])).decode('utf-8')
-
-    def _pad(self, s):
-        return s + (self.bs - len(s) % self.bs) * chr(self.bs - len(s) % self.bs)
-
-    @staticmethod
-    def _unpad(s):
-        return s[:-ord(s[len(s)-1:])]
+    def decrypt(self, data):
+        raw = b64decode(data)
+        self.cipher = AES.new(self.key, AES.MODE_CBC, raw[:AES.block_size])
+        return unpad(self.cipher.decrypt(raw[AES.block_size:]), AES.block_size)
 
 def hideFile(fn, pdfname):
 
@@ -61,11 +53,10 @@ def hideFile(fn, pdfname):
 	# object of AES class
 	passwd = input("Password: ")
 	aes = AESCipher(passwd)
-
-	encfn = aes.encrypt(b64fn.decode())
-	encdata = aes.encrypt(b64data.decode())
 	
-	datatowrite = "*"*3+ encfn.decode()+ "|"*3+ encdata.decode()+ "*"*3
+	payload = "*"*3 + b64fn.decode() + "|"*3+ b64data.decode() + "*"*3
+	
+	datatowrite = aes.encrypt(payload)
 
 	output = pypdf.PdfFileWriter()
 	
@@ -100,20 +91,19 @@ def unhide(stegpdf):
 		data = "".join(l).replace("\n", "").replace(" ", "")
 
 		# Use regex to distinguish file name and file data
-		hidden_data = re.findall(r'\*\*\*(.*?)\*\*\*', data)[0]
+		hidden_data = re.findall(r"JavaScript.*JavaScript", data)[0].split("<<")[0].split("(")[1].split(")")[0].replace("'", "")
 
-		encfileName = hidden_data.split("|||")[0]
-		encfileData = hidden_data.split("|||")[1]
+		hidden_data = hidden_data[1:]
 
 		passwd = input("Password: ")
 		aes = AESCipher(passwd)
-
-		encfn = aes.decrypt(encfileName)
-		encdata = aes.decrypt(encfileData)
-
-		decrFileName = base64.b64decode(encfn).decode("ascii")
-		decrData = base64.b64decode(encdata)
+		b64data = aes.decrypt(hidden_data).decode()
 		
+		encfileName = b64data.split("|||")[0].replace("***", "")
+		encfileData = b64data.split("|||")[1].replace("***", "")
+
+		decrFileName = b64decode(encfileName).decode("ascii")
+		decrData = b64decode(encfileData)
 
 		#Write the data to the filename
 		new = open(decrFileName,'wb')
